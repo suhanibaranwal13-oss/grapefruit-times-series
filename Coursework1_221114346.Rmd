@@ -1,0 +1,180 @@
+---
+title: "MTH6139 Time Series" 
+subtitle: "Coursework 1 -- Forecasting Grapefruit Prices with Prophet" 
+author: "Suhani Baranwal" 
+date: "March 2026" 
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: spacelab 
+    highlight: tango
+---
+<style>
+h1 {color: #DF536B ; font-weight: 600}
+</style>
+---
+
+```{r, echo=FALSE}
+# This code will display the QMUL logo at the top right of the page
+# Do not change this code
+htmltools::img(src = knitr::image_uri("images/QMlogo.png"),
+               alt = 'logo',
+               style = 'position:absolute; top:0; right:0; padding:10px; width:20%;')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(prophet)
+library(knitr)
+```
+
+# Introduction
+This project analyses grapefruit prices as a time series and uses Meta's Prophet forecasting system to produce forecasts. Agricultural prices often show trends and seasonal patterns, making them suitable for time series modelling. The data covers monthly grapefruit prices from January 2015 to January 2025.
+
+# Data
+The dataset contains monthly grapefruit prices sourced from the ONS Retail Price Index series (DOHN), covering January 1995 to January 2025. For the initial analysis, prices from January 2015 onwards are used, giving ten years of recent history. The data is cleaned and formatted so that the date column is named ds and the price column y, as required by Prophet.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+grapefruit_monthly <- read_csv("data/grapefruit_prices.csv", skip = 8,
+col_names = c("period", "value")) %>%
+filter(grepl("^[0-9]{4} [A-Z]{3}$", period)) %>%
+mutate( year = substr(period, 1, 4), month = substr(period, 6, 8), month_num = c(JAN="01", FEB="02", MAR="03", APR="04", MAY="05", JUN="06", JUL="07", AUG="08", SEP="09", OCT="10", NOV="11", DEC="12" )[month],
+ds = as.Date(paste(year, month_num, "01", sep = "-")),
+y = as.numeric(value) ) %>%
+  select(ds, y) %>%
+  filter(ds >= as.Date("2015-01-01")) %>%
+  arrange(ds)
+```
+
+The table below shows the first and last few observations alongside summary statistics for the price variable. Prices range from 47p to 59p per unit over the 2015-2025 period, which is a notably narrow band of just 12p, suggesting grapefruit is a relatively stable commodity compared to more weather sensitive fruit produce. The mean (54.39p) and median (55p) are close together, which suggests a roughly symmetric distribution with no extreme outliers.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+kable(head(grapefruit_monthly), caption = "First 6 observations", col.names = c("Date", "Price (pence per unit)"))
+
+kable(tail(grapefruit_monthly), caption = "Last 6 observations", col.names = c("Date", "Price (pence per unit)"))
+
+kable(t(as.data.frame(sapply(grapefruit_monthly[,"y"], summary))), caption = "Summary statistics for grapefruit prices", digits = 2)
+```
+
+The plot below shows how prices have changed over the period.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Monthly grapefruit prices from 2015 to 2025"}
+ggplot(grapefruit_monthly, aes(x = ds, y = y)) + geom_line(colour = "pink") + labs(title = "Grapefruit Prices Over Time", x = "Date", y = "Price (pence per unit)") + theme_minimal()
+```
+
+The plot shows a clear upward trend from around 47p in 2015 to approximately 57-59p by 2023-2024, representing roughly a 21-25% increase over the decade. There is also visible short term fluctuation within each year, hinting at the seasonal pattern that Prophet will later capture. A brief plateau is visible around 2020-2021, coinciding with the period of COVID19 supply chain disruption, particularly the logistical pressures on fresh produce imports from early 2020 onwards. Prices resumed their upward trajectory from 2022, suggesting the market largely recovered once supply chains stabilised.
+To quantify the overall growth, a simple linear regression of price on time was fitted:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+linear_model <- lm(y ~ as.numeric(ds), data = grapefruit_monthly)
+round(coef(linear_model)[2] * 365.25, 2)
+```
+
+The slope confirms that the long run trend is modest but consistent, prices rise by approximately 0.64p per year. This is useful context for interpreting the Prophet forecast: we should not expect dramatic price jumps, but rather a continuation of this steady rise.
+
+# Model
+Prophet is a forecasting tool developed by Meta that decomposes a time series into additive components: $$y(t) = g(t) + s(t) + \varepsilon(t)$$ where $g(t)$ represents the trend, $s(t)$ the seasonal component, and $\varepsilon(t)$ is the error term. The trend is modelled as a piecewise linear function, meaning Prophet automatically identifies moments where the rate of growth shifts, rather than imposing a single fixed slope across the entire series. The seasonal component is modelled using Fourier series, allowing it to capture smooth, repeating patterns within the year.
+Prophet is well suited to monthly data with clear seasonal patterns and is durable against missing values and outliers, here the model is fitted to the 2015-2025 dataset and used to forecast 12 months ahead.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+grapefruit_model <- prophet(grapefruit_monthly)
+grapefruit_future <- make_future_dataframe(grapefruit_model, periods = 12, freq = "month")
+grapefruit_forecast <- predict(grapefruit_model, grapefruit_future)
+```
+
+# Forecast
+The forecast plot below shows Prophet's 12-month future predictions alongside the observed data, with 95% uncertainty intervals shown as the shaded region.
+The model predicts that grapefruit prices will continue rising consistently over the next 12 months. By January 2026, the central forecast is approximately 58-59p, with the uncertainty interval widening as predictions move further from the observed data, reflecting the natural increase in uncertainty over longer forecast horizons. The predicted values track the observed data closely throughout the training period, confirming that the model is not systematically mis-specifying either the trend or the seasonal pattern.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Prophet forecast of monthly grapefruit prices with 95% uncertainty intervals"}
+plot(grapefruit_model, grapefruit_forecast) + labs(title = "Grapefruit Price Forecast", x = "Date", y = "Price (pence per unit)")
+```
+
+# Comparing Time Frames
+So far the model has been trained on data from 2015 onwards. However, the dataset contains monthly prices going back to 1995, giving us 30 years of history. Here we fit a second Prophet model using the full dataset to see whether the longer history changes our forecast.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+grapefruit_full <- read_csv("data/grapefruit_prices.csv", skip = 8, col_names = c("period", "value")) %>%
+filter(grepl("^[0-9]{4} [A-Z]{3}$", period)) %>%
+mutate(year = substr(period, 1, 4), month = substr(period, 6, 8), month_num = c( JAN="01", FEB="02", MAR="03", APR="04", MAY="05", JUN="06", JUL="07", AUG="08", SEP="09", OCT="10", NOV="11", DEC="12" )[month], ds = as.Date(paste(year, month_num, "01", sep = "-")), y = as.numeric(value) ) %>%
+select(ds, y) %>%
+arrange(ds)
+
+grapefruit_model_full <- prophet(grapefruit_full)
+grapefruit_future_full <- make_future_dataframe(grapefruit_model_full, periods = 12, freq = "month")
+grapefruit_forecast_full <- predict(grapefruit_model_full, grapefruit_future_full)
+```
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Prophet forecast using full data from 1995"}
+plot(grapefruit_model_full, grapefruit_forecast_full) + labs(title = "Grapefruit Price Forecast (1995-present)", x = "Date", y = "Price (pence per unit)")
+```
+
+The model trained on the full history produces a noticeably different forecast. Crucially, it captures the long period of stagnation between roughly 2000 and 2010 where prices barely moved. This leads the model to take a more conservative view of long run growth, producing a flatter forecast compared to the 2015 only model.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Comparing 12-month forecasts from both models"}
+future_2015_model <- tail(grapefruit_forecast[, c("ds", "yhat", "yhat_lower", "yhat_upper")], 12)
+future_2015_model$model <- "Trained from 2015"
+
+future_full_model <- tail(grapefruit_forecast_full[, c("ds", "yhat", "yhat_lower", "yhat_upper")], 12)
+future_full_model$model <- "Trained from 1995"
+
+forecast_comparison <- rbind(future_2015_model, future_full_model)
+
+ggplot(forecast_comparison, aes(x = ds, y = yhat, colour = model, fill = model)) + geom_line(size = 1) + geom_ribbon(aes(ymin = yhat_lower, ymax = yhat_upper), alpha = 0.15, colour = NA) +
+labs(title = "Forecast Comparison: 2015 vs 1995 Training Data", x = "Date", y = "Price (pence per unit)", colour = "Model", fill = "Model") + theme_minimal()
+```
+
+The comparison plot shows both 12-month forecasts side by side. By January 2026, the 2015 model predicts approximately 58-59p while the 1995 model predicts approximately 57-58p - a difference of roughly 1-2p that grows slightly over the forecast horizon as the two trend estimates compound. The uncertainty bands on the 1995 model are also wider, since it has learned from three decades of data that prices can be considerably more variable over longer horizons.
+Neither model is definitively correct, but there is a reasonable case for preferring the 2015 model here. Grapefruit prices in the UK are likely to have been structurally affected by post Brexit import arrangements and broader food price inflation since 2021, making the recent trend arguably more informative about future behaviour than the stagnant 2000s period. That said, if one believes current price growth will eventually revert toward its long run average, the more conservative 1995 model may be the better guide.
+
+# Components
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Trend and seasonal components of the Prophet model"}
+prophet_plot_components(grapefruit_model, grapefruit_forecast)
+```
+
+The components plot decomposes the Prophet model into its trend and seasonal elements, allowing each to be examined in isolation.
+The trend component shows a steady increase in grapefruit prices from 2015 onwards, with the rate of growth appearing to accelerate slightly after 2021, which could reflect a broader food price inflation in the post-pandemic period. A mild flattening is visible around 2019-2021, consistent with the COVID-19 plateau seen in the raw data.
+The seasonal component is particularly informative. Prices appear to peak during mid year, around July and reach their lowest point around January-February, a pattern that aligns with the global grapefruit supply calendar. Grapefruit production is dominated by harvests in Florida (peaking November to April) and South Africa (peaking June to September), meaning UK import supply is broadly available year-round but with seasonal variation in shipping costs and volumes. The seasonal amplitude of roughly 5-6p is modest relative to the overall trend, suggesting that while seasonality is present and consistent, it is the long run upward trend that drives the majority of price movement in this series
+
+# Model Limitations
+Prophet assumes that the historical patterns of trend and seasonality will continue into the future at a broadly similar rate. In practice, grapefruit prices are influenced by factors the model cannot observe, such as poor harvests caused by extreme weather, shipping disruptions, currency movements affecting import costs, or sudden changes in consumer demand that could all cause prices to deviate from the forecast. The plateau visible in 2020-2021 is a clear example: this likely reflects COVID-19 disruption to supply chains, which Prophet has no mechanism to anticipate or explain.
+Two further structural limitations are worth noting. First, Prophet's default trend model is piecewise linear, which assumes that growth happens in straight-line segments. If grapefruit prices were accelerating, for instance due to sustained inflation, a saturating or logistic growth model might be better suited. Second, the monthly frequency of the data means that within-month price volatility is invisible to the model; for applications requiring finer-grained forecasts, weekly or daily data would be needed.
+The forecast should therefore be treated as a baseline expectation under broadly normal market conditions, rather than a definitive prediction.
+
+# Model Refinement
+To investigate whether model fit could be improved, a log transformation is applied to the price series before fitting. Log transformations are useful when variance grows proportionally with the level of the series as they stabilise fluctuations and tend to produce better-behaved residuals.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+grapefruit_log <- grapefruit_monthly %>%
+mutate(y = log(y))
+
+grapefruit_model_log <- prophet(grapefruit_log)
+grapefruit_future_log <- make_future_dataframe(grapefruit_model_log, periods = 12, freq = "month")
+grapefruit_forecast_log <- predict(grapefruit_model_log, grapefruit_future_log)
+
+grapefruit_forecast_log$yhat <- exp(grapefruit_forecast_log$yhat)
+grapefruit_forecast_log$yhat_lower <- exp(grapefruit_forecast_log$yhat_lower)
+grapefruit_forecast_log$yhat_upper <- exp(grapefruit_forecast_log$yhat_upper)
+```
+
+The log-transformed model produces forecasts very similar to the original in both direction and magnitude, with slightly narrower uncertainty intervals. The two forecasts are compared in the plot below. The close agreement between models confirms that the original specification is already well suited to this data and that variance stabilisation offers no substantial improvement here. The variance in this series appears broadly stable across the period rather than growing over time, meaning the simpler untransformed model is the better choice. Nevertheless, testing this assumption explicitly is good analytical practice, rather than accepting the default model uncritically.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Comparing original and log-transformed model forecasts"}
+log_future <- tail(grapefruit_forecast_log[, c("ds", "yhat", "yhat_lower", "yhat_upper")], 12)
+log_future$model <- "Log-transformed"
+
+original_future <- tail(grapefruit_forecast[, c("ds", "yhat", "yhat_lower", "yhat_upper")], 12)
+original_future$model <- "Original"
+
+log_comparison <- rbind(log_future, original_future)
+
+ggplot(log_comparison, aes(x = ds, y = yhat, colour = model, fill = model)) + geom_line(size = 1) + geom_ribbon(aes(ymin = yhat_lower, ymax = yhat_upper), alpha = 0.15, colour = NA) + labs(title = "Original vs Log-Transformed Model Forecasts", x = "Date", y = "Price (pence per unit)", colour = "Model", fill = "Model") + theme_minimal()
+```
+
+# References
+Office for National Statistics (2026). *RPI: Average price - Grapefruit, each (pence).* Series ID: DOHN. Dataset: MM23. Released 18 February 2026. Available at: 
+https://www.ons.gov.uk [Accessed: March 2026].
